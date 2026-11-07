@@ -3,6 +3,7 @@ import { Role } from '@prisma/client';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { ChangePasswordDto } from '../auth/dto/change-password.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser, CurrentUserPayload } from '../common/decorators/current-user.decorator';
 
@@ -21,6 +22,18 @@ export class UsersController {
   @Get()
   findAll(@CurrentUser() actor: CurrentUserPayload) {
     return this.usersService.findAll(actor);
+  }
+
+  // ต้องประกาศ 'me' routes ก่อน ':id' เสมอ เพื่อไม่ให้ Nest จับคำว่า "me" เป็น :id
+  @Get('me')
+  getOwnProfile(@CurrentUser() actor: CurrentUserPayload) {
+    return this.usersService.findOne(actor.userId, actor);
+  }
+
+  // NFR-02: ผู้ใช้ทุกคนเปลี่ยนรหัสผ่านของตนเองได้
+  @Post('me/change-password')
+  changeOwnPassword(@Body() dto: ChangePasswordDto, @CurrentUser() actor: CurrentUserPayload) {
+    return this.usersService.changeOwnPassword(dto, actor);
   }
 
   @Get(':id')
@@ -42,5 +55,11 @@ export class UsersController {
   @Delete(':id')
   suspend(@Param('id') id: string, @CurrentUser() actor: CurrentUserPayload) {
     return this.usersService.suspend(id, actor);
+  }
+
+  @Roles(Role.SUPER_ADMIN, Role.WARD_ADMIN)
+  @Post(':id/reactivate')
+  reactivate(@Param('id') id: string, @CurrentUser() actor: CurrentUserPayload) {
+    return this.usersService.reactivate(id, actor);
   }
 }

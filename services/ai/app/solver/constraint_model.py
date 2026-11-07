@@ -20,6 +20,11 @@ from ortools.sat.python import cp_model
 
 from app.schemas import (
     AssignmentExplanation,
+    ConflictCheckAssignment,
+    ConflictCheckRequest,
+    ConflictCheckResult,
+    ConflictLocation,
+    ConflictViolation,
     InfeasibleReason,
     QualityScore,
     ScheduleSuggestRequest,
@@ -309,3 +314,169 @@ def solve_schedule(request: ScheduleSuggestRequest) -> ScheduleSuggestResult:
         ),
         solve_time_seconds=elapsed,
     )
+
+
+def check_conflicts(request: ConflictCheckRequest) -> ConflictCheckResult:
+    """
+    FR-A10 — ตรวจความขัดแย้งของตารางเวรที่มนุษย์แก้มือกับกฎระเบียบทุกข้อ "ในโหมดตรวจสอบ"
+    (ไม่ค้นหาคำตอบใหม่เหมือน solve_schedule — ประเมินตรงจากข้อมูลที่ fix ไว้แล้ว)
+
+    ตาม ADR-0002 docstring ของไฟล์นี้: ต้องใช้ความหมายของ ruleKey/parameters ชุดเดียวกับ
+    HardConstraintBuilder เป๊ะ ๆ เพื่อไม่ให้ตารางที่ Conflict Check บอกว่า "ผ่าน" กลับกลายเป็น
+    ตารางที่ AI Solver (MVP 2) มองว่าละเมิด Hard Constraint — ด้านล่างนี้คือการ Mirror
+    ตรรกะของแต่ละ add_*() method แต่ทำงานแบบประเมินตรง (ไม่ผ่าน CP-SAT) เพราะ Input
+    เป็นตารางที่ถูกกำหนดครบแล้ว ไม่ใช่ตัวแปรที่ต้องค้นหา
+    """
+    shift_by_code = {s["code"]: s for s in request.shift_types}
+    night_codes = {sc for sc, meta in shift_by_code.items() if meta.get("crossesMidnight")}
+    morning_codes = {sc for sc in shift_by_code if sc not in night_codes}
+
+    by_user: dict[str, list[ConflictCheckAssignment]] = defaultdict(list)
+    by_user_date: dict[tuple[str, date], list[ConflictCheckAssignment]] = defaultdict(list)
+    by_date_shift: dict[tuple[date, str], list[ConflictCheckAssignment]] = defaultdict(list)
+    for a in request.assignments:
+        by_user[a.user_id].append(a)
+        by_user_date[(a.user_id, a.date)].append(a)
+        by_date_shift[(a.date, a.shift_type_code)].append(a)
+    for items in by_user.values():
+        items.sort(key=lambda a: a.date)
+
+    violations: list[ConflictViolation] = []
+
+    # NO_DOUBLE_BOOKING — บังคับที่ชั้น DB (unique [userId,date]) อยู่แล้วสำหรับ Schedule
+    # เดียว แต่ตรวจซ้ำที่นี่เผื่อกรณีอนาคตที่ส่งข้อมูลข้าม Schedule มาตรวจพร้อมกัน
+    for (uid, d), items in by_user_date.items():
+        if len(items) > 1:
+            violations.append(
+                ConflictViolation(
+                    rule_key="NO_DOUBLE_BOOKING",
+                    message=f"{uid} มีเวรมอบหมายมากกว่า 1 เวรในวันที่ {d.isoformat()}",
+                    locations=[
+                        ConflictLocation(
+                            assignment_id=i.assignment_id, user_id=uid, date=d, shift_type_code=i.shift_type_code
+                        )
+                        for i in items
+                    ],
+                )
+            )
+
+    for rule in request.rules:
+        if rule.rule_type.value != "HARD":
+            continue
+
+        if rule.rule_key == "MIN_STAFF_PER_SHIFT":
+            shift_code = rule.parameters.get("shiftCode")
+            min_count = rule.parameters.get("min", 0)
+            d = date(request.year, request.month, 1)
+            while d.month == request.month:
+                items = by_date_shift.get((d, shift_code), [])
+                if len(items) < min_count:
+                    locations = [
+                        ConflictLocation(
+                            assignment_id=i.assignment_id, user_id=i.user_id, date=d, shift_type_code=shift_code
+                        )
+                        for i in items
+                    ] or [ConflictLocation(user_id="-", date=d, shift_type_code=shift_code)]
+                    violations.append(
+                        ConflictViolation(
+                            rule_key="MIN_STAFF_PER_SHIFT",
+                            message=(
+                                f"เวร {shift_code} วันที่ {d.isoformat()} มีบุคลากร {len(items)} คน "
+                                f"ต่ำกว่าเกณฑ์ขั้นต่ำ {min_count} คน"
+                            ),
+                            locations=locations,
+                        )
+                    )
+                d += timedelta(days=1)
+
+        elif rule.rule_key == "MAX_CONSECUTIVE_NIGHT_SHIFTS":
+            max_days = rule.parameters.get("maxConsecutiveDays", 3)
+            shift_code = rule.parameters.get("shiftCode", "NIGHT")
+            for uid, items in by_user.items():
+                run: list[ConflictCheckAssignment] = []
+                for a in items:
+                    if a.shift_type_code != shift_code:
+                        continue
+                    if run and (a.date - run[-1].date).days == 1:
+                        run.append(a)
+                    else:
+                        run = [a]
+                    if len(run) > max_days:
+                        violations.append(
+                            ConflictViolation(
+                                rule_key="MAX_CONSECUTIVE_NIGHT_SHIFTS",
+                                message=(
+                                    f"{uid} ขึ้นเวร {shift_code} ติดต่อกัน {len(run)} วัน เกินเกณฑ์ {max_days} วัน "
+                                    f"(ช่วง {run[0].date.isoformat()}–{run[-1].date.isoformat()})"
+                                ),
+                                locations=[
+                                    ConflictLocation(
+                                        assignment_id=x.assignment_id,
+                                        user_id=uid,
+                                        date=x.date,
+                                        shift_type_code=x.shift_type_code,
+                                    )
+                                    for x in run
+                                ],
+                            )
+                        )
+
+        elif rule.rule_key == "MIN_REST_HOURS":
+            for uid, items in by_user.items():
+                for i in range(len(items) - 1):
+                    cur, nxt = items[i], items[i + 1]
+                    if (nxt.date - cur.date).days != 1:
+                        continue
+                    if cur.shift_type_code in night_codes and nxt.shift_type_code in morning_codes:
+                        violations.append(
+                            ConflictViolation(
+                                rule_key="MIN_REST_HOURS",
+                                message=(
+                                    f"{uid} ขึ้นเวร {cur.shift_type_code} วันที่ {cur.date.isoformat()} แล้วขึ้นเวร "
+                                    f"{nxt.shift_type_code} วันที่ {nxt.date.isoformat()} ทันที "
+                                    "(พักไม่ครบเกณฑ์ขั้นต่ำ — Quick Return)"
+                                ),
+                                locations=[
+                                    ConflictLocation(
+                                        assignment_id=cur.assignment_id,
+                                        user_id=uid,
+                                        date=cur.date,
+                                        shift_type_code=cur.shift_type_code,
+                                    ),
+                                    ConflictLocation(
+                                        assignment_id=nxt.assignment_id,
+                                        user_id=uid,
+                                        date=nxt.date,
+                                        shift_type_code=nxt.shift_type_code,
+                                    ),
+                                ],
+                            )
+                        )
+
+        elif rule.rule_key == "APPROVED_LEAVE_BLOCK":
+            # MVP 3 Sprint 9 เป็นผู้ส่ง approved_leaves จริง — MVP 1 ยังไม่มีข้อมูลนี้
+            for leave in request.approved_leaves:
+                uid = leave["user_id"]
+                start = date.fromisoformat(leave["start_date"])
+                end = date.fromisoformat(leave["end_date"])
+                for a in by_user.get(uid, []):
+                    if start <= a.date <= end:
+                        violations.append(
+                            ConflictViolation(
+                                rule_key="APPROVED_LEAVE_BLOCK",
+                                message=(
+                                    f"{uid} ถูกมอบหมายเวร {a.shift_type_code} วันที่ {a.date.isoformat()} "
+                                    f"ซึ่งอยู่ระหว่างวันลาที่อนุมัติแล้ว ({start.isoformat()}–{end.isoformat()})"
+                                ),
+                                locations=[
+                                    ConflictLocation(
+                                        assignment_id=a.assignment_id,
+                                        user_id=uid,
+                                        date=a.date,
+                                        shift_type_code=a.shift_type_code,
+                                    )
+                                ],
+                            )
+                        )
+
+    return ConflictCheckResult(is_valid=len(violations) == 0, violations=violations)

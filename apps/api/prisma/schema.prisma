@@ -135,9 +135,13 @@ model User {
   primaryWard    Ward?         @relation(fields: [primaryWardId], references: [id])
   status         UserStatus    @default(ACTIVE)
 
-  // NFR-02: Security
-  twoFactorEnabled Boolean @default(false)
-  twoFactorSecret  String?
+  // NFR-02: Security — Password Policy + Account Lockout
+  twoFactorEnabled    Boolean   @default(false)
+  twoFactorSecret     String?
+  passwordUpdatedAt   DateTime? // ใช้บังคับ "เปลี่ยนรหัสผ่านทุก N วัน" ถ้านโยบายต้องการในอนาคต
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime? // ล็อกบัญชีชั่วคราวหลังพยายามเข้าสู่ระบบผิดติดต่อกันเกินเกณฑ์
+  mustChangePassword  Boolean   @default(false) // true เมื่อ Admin ตั้งรหัสผ่านชั่วคราวให้
 
   // INT-03/04/05: OAuth2.0 SSO
   oauthGoogleId    String? @unique
@@ -159,10 +163,30 @@ model User {
   fatigueScores            FatigueScore[]
   notifications            Notification[]
   auditLogs                AuditLog[]
+  refreshTokens            RefreshToken[]
   swapRequestsAsRequester  ShiftSwapRequest[] @relation("SwapRequester")
   swapRequestsAsCounterparty ShiftSwapRequest[] @relation("SwapCounterparty")
 
   @@map("users")
+}
+
+/// NFR-02: Refresh Token Rotation — เก็บเป็น hash ไม่เก็บ token ตรง ๆ
+/// ทุกครั้งที่ใช้ refresh token เดิมจะถูก revoke และออกตัวใหม่ (rotation)
+/// ถ้ามีคนพยายามใช้ token ที่ revoke ไปแล้ว = สัญญาณ token ถูกขโมย ให้ revoke ทั้งตระกูล (family)
+model RefreshToken {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  tokenHash  String    @unique
+  familyId   String    // กลุ่ม token ที่สืบทอดมาจาก login ครั้งเดียวกัน
+  revokedAt  DateTime?
+  replacedByTokenHash String?
+  expiresAt  DateTime
+  ipAddress  String?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
 }
 
 /// FR-A03: Dynamic Menu Configuration ตาม Role

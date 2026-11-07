@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { authApi, ApiError } from '@/lib/api-client';
+import { ApiError } from '@/lib/api-client';
+import { useAuth } from '@/lib/auth-context';
 
 /**
  * FR-A01, NFR-02: หน้า Login — Username/Password
@@ -10,6 +11,7 @@ import { authApi, ApiError } from '@/lib/api-client';
  */
 export default function LoginPage() {
   const router = useRouter();
+  const { login } = useAuth();
   const [employeeCodeOrEmail, setEmployeeCodeOrEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -20,10 +22,9 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      const { accessToken, refreshToken } = await authApi.login(employeeCodeOrEmail, password);
-      localStorage.setItem('accessToken', accessToken);
-      localStorage.setItem('refreshToken', refreshToken);
-      router.push('/dashboard');
+      const res = await login(employeeCodeOrEmail, password);
+      // NFR-02: บังคับเปลี่ยนรหัสผ่านก่อนใช้งานต่อ ถ้าบัญชีถูกสร้างใหม่หรือถูกรีเซ็ต
+      router.push(res.mustChangePassword ? '/change-password?forced=1' : '/dashboard');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่');
     } finally {

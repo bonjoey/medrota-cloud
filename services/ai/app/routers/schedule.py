@@ -5,8 +5,8 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 
-from app.schemas import ScheduleSuggestRequest, ScheduleSuggestResult
-from app.solver.constraint_model import solve_schedule
+from app.schemas import ConflictCheckRequest, ConflictCheckResult, ScheduleSuggestRequest, ScheduleSuggestResult
+from app.solver.constraint_model import check_conflicts, solve_schedule
 
 router = APIRouter(prefix="/schedules", tags=["scheduling"])
 
@@ -35,3 +35,14 @@ def get_suggestion_result(job_id: str) -> ScheduleSuggestResult:
     if result is None:
         raise HTTPException(status_code=404, detail="ไม่พบ Job นี้")
     return result
+
+
+@router.post("/check-conflicts")
+def check_conflicts_endpoint(request: ConflictCheckRequest) -> ConflictCheckResult:
+    """
+    POST /api/v1/ai/schedules/check-conflicts — FR-A10 (MVP 1 Sprint 3)
+
+    ทำงานแบบ Synchronous (ไม่ใช่ Job Queue เหมือน /suggest) เพราะเป็นการประเมินตรง
+    ไม่ใช่การค้นหาคำตอบด้วย CP-SAT — เร็วพอให้ NestJS เรียกแบบ Sync ได้ตาม ADR-0002
+    """
+    return check_conflicts(request)

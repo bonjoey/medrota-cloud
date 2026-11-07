@@ -91,6 +91,56 @@ class ScheduleSuggestResult(BaseModel):
     solve_time_seconds: float = 0.0
 
 
+class ConflictCheckAssignment(BaseModel):
+    """FR-A10: 1 ช่องของตารางที่กำลังตรวจ (มาจาก ScheduleAssignment ฝั่ง NestJS)"""
+
+    assignment_id: str
+    user_id: str
+    date: date
+    shift_type_code: str
+
+
+class ConflictCheckRequest(BaseModel):
+    """
+    FR-A10: Input ของ POST /ai/schedules/check-conflicts
+
+    หมายเหตุ (ADR-0002): reuse ruleKey/parameters ชุดเดียวกับ ScheduleSuggestRequest
+    เพื่อไม่ให้มีตรรกะกฎสองชุดที่ตีความต่างกัน — ต่างกันแค่ Mode (ตรวจของที่มีอยู่แล้ว
+    เทียบกับค้นหาคำตอบใหม่)
+    """
+
+    hospital_id: str
+    ward_id: str
+    month: int = Field(ge=1, le=12)
+    year: int
+    assignments: list[ConflictCheckAssignment]
+    shift_types: list[dict[str, Any]]
+    rules: list[SchedulingRule]
+    approved_leaves: list[dict[str, Any]] = []
+
+
+class ConflictLocation(BaseModel):
+    """ตำแหน่งบน Grid ที่ต้องชี้ให้ผู้ใช้เห็น (AIP-01 + FR-A10 UI requirement)"""
+
+    assignment_id: str | None = None
+    user_id: str
+    date: date
+    shift_type_code: str | None = None
+
+
+class ConflictViolation(BaseModel):
+    rule_key: str
+    message: str
+    locations: list[ConflictLocation]
+
+
+class ConflictCheckResult(BaseModel):
+    """FR-A10: Output — รายการข้อขัดแย้งทั้งหมด พร้อมตำแหน่งชี้บน Grid"""
+
+    is_valid: bool
+    violations: list[ConflictViolation] = []
+
+
 class ForecastRequest(BaseModel):
     """FR-AI02: Input ของ GET /ai/forecast"""
 
