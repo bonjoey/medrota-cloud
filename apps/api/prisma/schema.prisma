@@ -1,0 +1,617 @@
+// ============================================================================
+// MedRota Cloud — Database Schema
+// อ้างอิง: PRD_MedRotaCloud_v1.0.md, MVP_ExecutionPlan_v1.0.md
+// ทุก model มี comment อ้างอิง FR/BP/NFR ID เพื่อ Traceability (ดู PRD หัวข้อ 13)
+//
+// หลักการสำคัญที่ยึดตาม PRD:
+// 1. Multi-tenant: ทุกตารางหลักมี hospitalId (ADR-0003) เพื่อรองรับ Row-Level Security
+// 2. Hard/Soft Constraint แยกจากกันตั้งแต่ชั้นข้อมูล (ไม่ฝังเป็น if-else ในโค้ด)
+//    ตามคำเตือนใน MVP_ExecutionPlan Sprint 2 "ข้อควรระวังทางเทคนิค"
+// 3. Explainability (AIP-01): ทุกผลลัพธ์จาก AI ต้องเก็บเหตุผลไว้ด้วย ไม่ใช่แค่ผลลัพธ์
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// 1. Core / Master Data — FR-A01, FR-A04, FR-A05
+// ---------------------------------------------------------------------------
+
+/// FR-A05: จัดการข้อมูลโรงพยาบาลและนโยบายการขึ้นเวรระดับองค์กร
+model Hospital {
+  id        String   @id @default(uuid())
+  name      String
+  address   String?
+  logoUrl   String?
+  timezone  String   @default("Asia/Bangkok")
+
+  // นโยบายระดับองค์กร (ค่า default; Ward ที่เฉพาะเจาะจงกว่าอยู่ใน SchedulingRule)
+  minHoursPerMonth Int?
+  maxHoursPerMonth Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  departments     Department[]
+  wards           Ward[]
+  users           User[]
+  shiftTypes      ShiftType[]
+  schedulingRules SchedulingRule[]
+  forecastResults ForecastResult[]
+  aiJobs          AiJob[]
+  auditLogs       AuditLog[]
+
+  @@map("hospitals")
+}
+
+/// FR-A04: จัดการข้อมูลแผนก
+model Department {
+  id         String   @id @default(uuid())
+  hospitalId String
+  hospital   Hospital @relation(fields: [hospitalId], references: [id])
+  name       String
+  createdAt  DateTime @default(now())
+
+  wards Ward[]
+
+  @@map("departments")
+}
+
+/// FR-A04: จัดการข้อมูล Ward, อาคาร, ประเภทหอผู้ป่วย (ICU/General/ER)
+enum WardType {
+  ICU
+  GENERAL
+  ER
+  OTHER
+
+  @@map("ward_type")
+}
+
+model Ward {
+  id           String   @id @default(uuid())
+  hospitalId   String
+  hospital     Hospital @relation(fields: [hospitalId], references: [id])
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  name         String
+  wardType     WardType
+  building     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  users           User[]
+  schedules       Schedule[]
+  schedulingRules SchedulingRule[]
+  forecastResults ForecastResult[]
+  aiJobs          AiJob[]
+
+  @@map("wards")
+}
+
+/// FR-A01: จัดการผู้ใช้งาน | FR-A02: RBAC 4 บทบาท
+enum Role {
+  SUPER_ADMIN
+  WARD_ADMIN
+  HEAD_NURSE
+  NURSE
+
+  @@map("role")
+}
+
+/// RN/PN/NA ตาม Glossary ของ PRD
+enum PositionLevel {
+  RN
+  PN
+  NA
+
+  @@map("position_level")
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+
+  @@map("user_status")
+}
+
+model User {
+  id             String        @id @default(uuid())
+  hospitalId     String
+  hospital       Hospital      @relation(fields: [hospitalId], references: [id])
+  employeeCode   String        @unique
+  fullName       String
+  email          String?       @unique
+  phone          String?
+  passwordHash   String?
+  role           Role
+  positionLevel  PositionLevel
+  primaryWardId  String?
+  primaryWard    Ward?         @relation(fields: [primaryWardId], references: [id])
+  status         UserStatus    @default(ACTIVE)
+
+  // NFR-02: Security
+  twoFactorEnabled Boolean @default(false)
+  twoFactorSecret  String?
+
+  // INT-03/04/05: OAuth2.0 SSO
+  oauthGoogleId    String? @unique
+  oauthMicrosoftId String? @unique
+  oauthFacebookId  String? @unique
+
+  // FR-U04: สิทธิวันลาคงเหลือ
+  annualLeaveBalance   Int @default(0)
+  sickLeaveBalance     Int @default(0)
+  personalLeaveBalance Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  scheduleAssignments      ScheduleAssignment[]
+  leaveRequests            LeaveRequest[]
+  timeAttendanceRecords    TimeAttendanceRecord[]
+  overtimeRecords          OvertimeRecord[]
+  fatigueScores            FatigueScore[]
+  notifications            Notification[]
+  auditLogs                AuditLog[]
+  swapRequestsAsRequester  ShiftSwapRequest[] @relation("SwapRequester")
+  swapRequestsAsCounterparty ShiftSwapRequest[] @relation("SwapCounterparty")
+
+  @@map("users")
+}
+
+/// FR-A03: Dynamic Menu Configuration ตาม Role
+model MenuItem {
+  id           String   @id @default(uuid())
+  key          String   @unique
+  labelTh      String
+  labelEn      String
+  path         String
+  allowedRoles Role[]
+  isActive     Boolean  @default(true)
+  sortOrder    Int      @default(0)
+
+  @@map("menu_items")
+}
+
+// ---------------------------------------------------------------------------
+// 2. Scheduling Rules & Shift Types — FR-A06, FR-A07
+// ---------------------------------------------------------------------------
+
+/// FR-A06: ประเภทเวรและอัตราค่าตอบแทน
+model ShiftType {
+  id               String   @id @default(uuid())
+  hospitalId       String
+  hospital         Hospital @relation(fields: [hospitalId], references: [id])
+  code             String   // "MORNING" | "AFTERNOON" | "NIGHT" | "SPECIAL" | ...
+  name             String
+  startTime        String   // "08:00"
+  endTime          String   // "16:00"
+  crossesMidnight  Boolean  @default(false)
+  compensationRate Decimal  @db.Decimal(10, 2)
+  createdAt        DateTime @default(now())
+
+  assignments ScheduleAssignment[]
+
+  @@unique([hospitalId, code])
+  @@map("shift_types")
+}
+
+/// FR-A07: กฎระเบียบเวร — แยก Hard/Soft Constraint ตั้งแต่ชั้นข้อมูล (สำคัญ: ดู ADR-0002)
+/// Hard  = ห้ามละเมิดเด็ดขาด เช่น เวลาพักขั้นต่ำ, Nurse-to-Patient Ratio
+/// Soft  = พยายามทำให้ดีที่สุด มี weight ปรับได้ ใช้ใน Objective Function (FR-AI01 ขั้นที่ 2)
+enum RuleType {
+  HARD
+  SOFT
+
+  @@map("rule_type")
+}
+
+model SchedulingRule {
+  id           String    @id @default(uuid())
+  hospitalId   String
+  hospital     Hospital  @relation(fields: [hospitalId], references: [id])
+  wardId       String?   // null = กฎระดับโรงพยาบาล (FR-A05), ไม่ null = เฉพาะ Ward (CON-03)
+  ward         Ward?     @relation(fields: [wardId], references: [id])
+  ruleType     RuleType
+  ruleKey      String    // e.g. "MAX_CONSECUTIVE_NIGHT_SHIFTS", "MIN_REST_HOURS", "NURSE_TO_PATIENT_RATIO", "QUICK_RETURN_HOURS"
+  parameters   Json      // รูปแบบ flexible เช่น {"maxConsecutiveDays": 3}
+  weight       Float?    // เฉพาะ SOFT — สอบเทียบใน Sprint 0 ตาม MVP_ExecutionPlan หัวข้อ 5
+  isActive     Boolean   @default(true)
+  calibratedAt DateTime? // วันที่ยืนยันกับ Workshop Sprint 0
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("scheduling_rules")
+}
+
+// ---------------------------------------------------------------------------
+// 3. Schedule (ตารางเวร) — FR-A08, FR-A09, FR-A10, FR-A11
+// ---------------------------------------------------------------------------
+
+enum ScheduleStatus {
+  DRAFT
+  REVIEW
+  APPROVED
+  PUBLISHED
+
+  @@map("schedule_status")
+}
+
+enum ScheduleSource {
+  MANUAL
+  AI
+
+  @@map("schedule_source")
+}
+
+/// FR-A08: สร้างตารางเวรประจำเดือน | FR-A11: Workflow Draft→Review→Approved→Published
+model Schedule {
+  id           String         @id @default(uuid())
+  hospitalId   String
+  wardId       String
+  ward         Ward           @relation(fields: [wardId], references: [id])
+  month        Int            // 1-12
+  year         Int
+  status       ScheduleStatus @default(DRAFT)
+  source       ScheduleSource @default(MANUAL)
+  aiJobId      String?        // FK อ้างอิง AiJob ถ้าสร้างผ่าน Auto-suggest (FR-AI01)
+
+  // FR-AI01 output: Fairness Index, Gini Coefficient, คาด OT รวม
+  qualityScore Json?
+
+  publishedAt   DateTime?
+  publishedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assignments ScheduleAssignment[]
+  changeLogs  ScheduleChangeLog[]
+
+  @@unique([wardId, month, year])
+  @@map("schedules")
+}
+
+/// ช่องในตาราง Grid: 1 บุคคล 1 เวร 1 วัน
+model ScheduleAssignment {
+  id          String    @id @default(uuid())
+  scheduleId  String
+  schedule    Schedule  @relation(fields: [scheduleId], references: [id])
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  shiftTypeId String
+  shiftType   ShiftType @relation(fields: [shiftTypeId], references: [id])
+  date        DateTime  @db.Date
+
+  isManualOverride Boolean @default(false) // แก้มือหลัง AI เสนอ — ต้องตรวจ Hard Constraint ซ้ำ (FR-A09)
+
+  /// Explainability Layer (AIP-01): เหตุผลที่มอบหมายเวรนี้ + ผลกระทบถ้าเปลี่ยนตัว
+  explanation Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  overtimeRecords OvertimeRecord[]
+
+  // ห้ามมอบหมายเวรซ้อนทับ (Hard Constraint สำคัญที่สุด) — บังคับระดับ DB ด้วย
+  @@unique([userId, date])
+  @@map("schedule_assignments")
+}
+
+/// FR-A09: แก้ไขตารางเวร — Change Log ทุกครั้งพร้อมผู้แก้ไขและเวลา
+model ScheduleChangeLog {
+  id          String   @id @default(uuid())
+  scheduleId  String
+  schedule    Schedule @relation(fields: [scheduleId], references: [id])
+  changedById String   // actor reference (ไม่ enforce FK เพื่อให้บันทึกได้แม้ user ถูกลบ/ระงับ)
+  changeType  String   // "MANUAL_EDIT" | "AI_RESOLVE" | "STATUS_CHANGE" | "INCREMENTAL_RESOLVE"
+  beforeJson  Json?
+  afterJson   Json?
+  reason      String?
+  createdAt   DateTime @default(now())
+
+  @@map("schedule_change_logs")
+}
+
+// ---------------------------------------------------------------------------
+// 4. Shift Swap — FR-U03, FR-A12, BP-02
+// ---------------------------------------------------------------------------
+
+enum SwapStatus {
+  PENDING_COUNTERPARTY
+  PENDING_ADMIN_APPROVAL
+  APPROVED
+  REJECTED
+  CANCELLED
+  EXPIRED
+
+  @@map("swap_status")
+}
+
+model ShiftSwapRequest {
+  id                        String     @id @default(uuid())
+  requesterId               String
+  requester                 User       @relation("SwapRequester", fields: [requesterId], references: [id])
+  counterpartyId            String
+  counterparty              User       @relation("SwapCounterparty", fields: [counterpartyId], references: [id])
+  requesterAssignmentId     String
+  counterpartyAssignmentId  String
+  status                    SwapStatus @default(PENDING_COUNTERPARTY)
+
+  /// ผลตรวจ Hard Constraint + Fatigue Score ทั้งสองฝ่าย (FR-AI01, FR-AI03) ก่อนเสนอให้อนุมัติ
+  constraintCheckResult Json?
+
+  decidedById      String?
+  decidedAt        DateTime?
+  rejectionReason  String?
+  createdAt        DateTime @default(now())
+
+  @@map("shift_swap_requests")
+}
+
+// ---------------------------------------------------------------------------
+// 5. Leave — FR-U04, FR-A13, BP-03
+// ---------------------------------------------------------------------------
+
+enum LeaveType {
+  SICK
+  VACATION
+  PERSONAL
+  EMERGENCY
+  OTHER
+
+  @@map("leave_type")
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+
+  @@map("leave_status")
+}
+
+model LeaveRequest {
+  id             String      @id @default(uuid())
+  userId         String
+  user           User        @relation(fields: [userId], references: [id])
+  leaveType      LeaveType
+  startDate      DateTime    @db.Date
+  endDate        DateTime    @db.Date
+  reason         String
+  attachmentUrl  String?
+  status         LeaveStatus @default(PENDING)
+  isEmergency    Boolean     @default(false) // BP-03 EX-2: เส้นทางเร่งด่วน ตอบภายใน 15 นาที
+
+  /// ผลประเมินผลกระทบต่อกำลังคน (FR-AI02, FR-A10) ก่อนหัวหน้าตึกตัดสิน
+  impactAssessment Json?
+
+  decidedById              String?
+  decidedAt                DateTime?
+  rejectionReason          String?
+  incrementalResolveJobId  String? // อ้างอิง AiJob ที่จัดเวรแทนหลังอนุมัติ (FR-AI01 ขั้นที่ 5)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("leave_requests")
+}
+
+// ---------------------------------------------------------------------------
+// 6. Time Attendance & Overtime — INT-01, FR-A14, FR-U06, FR-U07, FR-R02, FR-R03, BP-04
+// ---------------------------------------------------------------------------
+
+enum ImportMethod {
+  API
+  FILE_IMPORT // RK-03 fallback เมื่อระบบลงเวลางานไม่รองรับ API
+
+  @@map("import_method")
+}
+
+/// INT-01: ข้อมูล Clock-in/Clock-out จริงจากระบบ Time Attendance
+model TimeAttendanceRecord {
+  id                   String        @id @default(uuid())
+  userId               String
+  user                 User          @relation(fields: [userId], references: [id])
+  clockIn              DateTime?
+  clockOut             DateTime?
+  sourceSystem         String?       // ชื่อ Vendor จริง — รอข้อมูลจาก [ระบุ Vendor ที่ใช้] ใน PRD CON-01
+  importMethod         ImportMethod  @default(API)
+  /// กันรายการที่ไม่สมบูรณ์ออกจากการคำนวณ ตาม BP-04 EX-1 ("ห้ามประมาณค่าแทนโดยอัตโนมัติ")
+  dataQualityFlag      String?       // "INCOMPLETE_PAIR" | "CROSSES_MIDNIGHT" | "MISSING" | null = ปกติ
+  excludedFromCalc     Boolean       @default(false)
+  createdAt            DateTime      @default(now())
+
+  @@map("time_attendance_records")
+}
+
+enum OvertimeStatus {
+  PENDING_REVIEW
+  DISPUTED
+  APPROVED
+  LOCKED      // ปิดรอบแล้ว ห้ามแก้ย้อนหลัง (BP-04 EX-2)
+  ADJUSTED    // รายการปรับปรุงในรอบถัดไป อ้างอิงรอบเดิม
+
+  @@map("overtime_status")
+}
+
+/// FR-A14, FR-R03: คำนวณ OT จากการขึ้นเวรจริง เทียบกับแผน
+model OvertimeRecord {
+  id                     String             @id @default(uuid())
+  userId                 String
+  user                   User               @relation(fields: [userId], references: [id])
+  scheduleAssignmentId   String?
+  scheduleAssignment     ScheduleAssignment? @relation(fields: [scheduleAssignmentId], references: [id])
+  month                  Int
+  year                   Int
+  plannedHours           Decimal            @db.Decimal(6, 2)
+  actualHours            Decimal            @db.Decimal(6, 2)
+  varianceHours          Decimal            @db.Decimal(6, 2)
+  otHours                Decimal            @db.Decimal(6, 2)
+  otAmount               Decimal            @db.Decimal(12, 2)
+  status                 OvertimeStatus     @default(PENDING_REVIEW)
+  explanationNote        String?            // ชี้แจงส่วนต่างจากพยาบาล (BP-04 ขั้นที่ 3)
+  approvedById           String?
+  approvedAt             DateTime?
+  exportedToPayrollAt    DateTime?          // INT-02
+  adjustmentOfRecordId   String?            // อ้างอิงรายการเดิมถ้าเป็นรายการปรับปรุง
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, month, year])
+  @@map("overtime_records")
+}
+
+// ---------------------------------------------------------------------------
+// 7. AI Capabilities — FR-AI01, FR-AI02, FR-AI03
+// ---------------------------------------------------------------------------
+
+enum AiJobType {
+  SCHEDULE_SUGGEST     // FR-AI01
+  INCREMENTAL_RESOLVE  // FR-AI01 ขั้นที่ 5
+  FORECAST_TRAIN       // FR-AI02
+  FATIGUE_BATCH        // FR-AI03
+
+  @@map("ai_job_type")
+}
+
+enum AiJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+
+  @@map("ai_job_status")
+}
+
+/// Job Queue สำหรับงานฝั่ง Python (ADR-0002): NestJS ส่งงาน, Python worker ประมวลผล
+model AiJob {
+  id               String      @id @default(uuid())
+  jobType          AiJobType
+  hospitalId       String
+  hospital         Hospital    @relation(fields: [hospitalId], references: [id])
+  wardId           String?
+  ward             Ward?       @relation(fields: [wardId], references: [id])
+  status           AiJobStatus @default(QUEUED)
+  requestPayload   Json
+  resultPayload    Json?
+
+  /// กรณี Infeasible: ชุดเงื่อนไขที่ขัดแย้งกัน + ทางเลือกคลายเงื่อนไข (AIP-01, BP-01 EX-1)
+  infeasibleReason Json?
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@map("ai_jobs")
+}
+
+/// FR-AI03: Fatigue Score รายบุคคล (0-100) พร้อมปัจจัยประกอบ
+model FatigueScore {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  scoreDate DateTime @db.Date
+  score     Int      // 0-100
+
+  /// breakdown ตามปัจจัยในตาราง PRD 5.4.5: ชั่วโมงสะสม 7/14/28วัน, เวรดึกติดกัน,
+  /// Quick Return, ทิศทางหมุนเวร, ช่วงนาฬิกาชีวิตต่ำสุด, วันพักฟื้น
+  factors   Json
+
+  riskLevel String  // "NORMAL" | "WARNING" | "CRITICAL" — เกณฑ์แยกตามประเภทหอผู้ป่วย
+  /// BP-05 EX-1: คำนวณจากแผนแทนผลจริงเมื่อข้อมูลขึ้นเวรจริงมาไม่ครบ ต้องกำกับว่าเป็นค่าประมาณ
+  isEstimate Boolean @default(false)
+
+  acknowledgedById     String?
+  actionTaken          String?
+  actionNotTakenReason String? // AIP-02: หัวหน้าตึกเลือกไม่ปรับต้องบันทึกเหตุผล
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, scoreDate])
+  @@map("fatigue_scores")
+}
+
+/// FR-AI02: ผลคาดการณ์ ADC/BOR และ FTE ที่ต้องการ
+model ForecastResult {
+  id                  String   @id @default(uuid())
+  hospitalId          String
+  hospital            Hospital @relation(fields: [hospitalId], references: [id])
+  wardId              String
+  ward                Ward     @relation(fields: [wardId], references: [id])
+  forecastDate        DateTime @db.Date
+  horizonDays         Int
+  p50Value            Decimal  @db.Decimal(10, 2)
+  p90Value            Decimal  @db.Decimal(10, 2)
+  requiredFteByLevel  Json     // เช่น {"RN":5,"PN":2,"NA":1}
+  featureImportance   Json?
+  modelVersion        String   // Model Registry (FR-AI02 ขั้นที่ 5)
+
+  // สำหรับติดตามความแม่นยำ (เกณฑ์ MAPE ≤15%/≤20% ตาม PRD)
+  actualValue Decimal? @db.Decimal(10, 2)
+  mape        Decimal? @db.Decimal(6, 3)
+
+  createdAt DateTime @default(now())
+
+  @@map("forecast_results")
+}
+
+// ---------------------------------------------------------------------------
+// 8. Notification — FR-A15, FR-U08, INT-07
+// ---------------------------------------------------------------------------
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  WEB_PUSH
+
+  @@map("notification_channel")
+}
+
+model Notification {
+  id                String               @id @default(uuid())
+  userId            String
+  user              User                 @relation(fields: [userId], references: [id])
+  channel           NotificationChannel
+  category          String               // "SCHEDULE_PUBLISHED" | "SWAP_REQUEST" | "LEAVE_DECISION" | ...
+  title             String
+  body              String
+  isRead            Boolean              @default(false)
+  deliveryStatus    String               @default("PENDING") // PENDING | SENT | FAILED | RETRIED
+  relatedEntityType String?
+  relatedEntityId   String?
+  createdAt         DateTime             @default(now())
+
+  @@map("notifications")
+}
+
+// ---------------------------------------------------------------------------
+// 9. Audit Log — NFR-03 (บันทึก Audit Log ทุก Transaction)
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  hospitalId String
+  hospital   Hospital @relation(fields: [hospitalId], references: [id])
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  actorRole  String?
+  action     String   // "CREATE" | "UPDATE" | "DELETE" | "APPROVE" | "PUBLISH" | ...
+  entityType String
+  entityId   String
+  beforeJson Json?
+  afterJson  Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@map("audit_logs")
+}

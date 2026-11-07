@@ -1,0 +1,70 @@
+name: CI
+
+# ADR-0004: Lint -> Unit Test -> Contract Test -> Build บน PR ทุกครั้ง
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: medrota
+          POSTGRES_PASSWORD: medrota
+          POSTGRES_DB: medrota_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U medrota"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - run: npx prisma generate
+      - run: npm run lint
+      - name: Run tests with coverage (NFR-06 — gate 70%)
+        run: npm run test:cov
+        env:
+          DATABASE_URL: postgresql://medrota:medrota@localhost:5432/medrota_test
+      - run: npm run build
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - run: npm run lint
+      - run: npm run build
+
+  ai:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/ai
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: pip install ruff
+      - run: ruff check app tests
+      - name: Unit test — FR-AI01 Solver, FR-AI03 Fatigue Scoring
+        run: pytest -v
+      # TODO (ADR-0002): เพิ่ม Contract Test เทียบ packages/shared/contracts/ai-service.openapi.yaml
+      # ด้วย Schemathesis เมื่อ endpoint ครบตามสัญญา

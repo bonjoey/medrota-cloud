@@ -1,0 +1,238 @@
+# สัญญา API ระหว่าง NestJS (apps/api) และ Python AI Service (services/ai)
+# ตาม ADR-0002 — Single Source of Truth, ต้อง sync กับ services/ai/app/schemas.py
+openapi: 3.0.3
+info:
+  title: MedRota Cloud — AI Service Contract
+  version: 0.1.0
+  description: >
+    FR-AI01 (Scheduling Engine), FR-AI02 (Demand Forecasting), FR-AI03 (Fatigue Scoring)
+paths:
+  /api/v1/ai/schedules/suggest:
+    post:
+      summary: FR-AI01 — ขอให้เครื่องยนต์เสนอตารางเวร (Asynchronous Job)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleSuggestRequest'
+      responses:
+        '200':
+          description: Job ID สำหรับ poll สถานะ
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+
+  /api/v1/ai/schedules/suggest/{jobId}:
+    get:
+      summary: FR-AI01 — ตรวจสถานะและรับผลตารางที่เสนอ
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ผลลัพธ์การจัดเวร (Feasible/Infeasible)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleSuggestResult'
+
+  /api/v1/ai/forecast:
+    get:
+      summary: FR-AI02 — ค่าคาดการณ์ ADC/BOR และ FTE ที่ต้องการ
+      parameters:
+        - name: ward
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: horizon
+          in: query
+          schema:
+            type: integer
+            default: 30
+      responses:
+        '200':
+          description: ผลคาดการณ์
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForecastResponse'
+
+  /api/v1/ai/fatigue-score:
+    get:
+      summary: FR-AI03 — Fatigue Score พร้อมปัจจัยประกอบ (จำกัดสิทธิ์ตาม Ethical Guardrails)
+      parameters:
+        - name: ward
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: month
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: รายการ Fatigue Score
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FatigueScoreResult'
+
+components:
+  schemas:
+    RuleType:
+      type: string
+      enum: [HARD, SOFT]
+
+    SchedulingRule:
+      type: object
+      required: [rule_key, rule_type, parameters]
+      properties:
+        rule_key:
+          type: string
+        rule_type:
+          $ref: '#/components/schemas/RuleType'
+        parameters:
+          type: object
+        weight:
+          type: number
+          nullable: true
+
+    ScheduleSuggestRequest:
+      type: object
+      required: [hospital_id, ward_id, month, year, staff, shift_types, rules]
+      properties:
+        hospital_id: { type: string }
+        ward_id: { type: string }
+        month: { type: integer, minimum: 1, maximum: 12 }
+        year: { type: integer }
+        staff:
+          type: array
+          items:
+            type: object
+            properties:
+              user_id: { type: string }
+              position_level: { type: string }
+              ward_id: { type: string }
+        shift_types:
+          type: array
+          items: { type: object }
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/SchedulingRule'
+        approved_leaves:
+          type: array
+          items: { type: object }
+        required_fte:
+          type: array
+          items: { type: object }
+        fatigue_scores:
+          type: object
+        objective_weights:
+          type: object
+        time_limit_seconds:
+          type: integer
+          default: 60
+
+    AssignmentExplanation:
+      type: object
+      properties:
+        user_id: { type: string }
+        date: { type: string, format: date }
+        shift_type_code: { type: string }
+        reasons:
+          type: array
+          items: { type: string }
+        change_impact_if_swapped: { type: string, nullable: true }
+
+    InfeasibleReason:
+      type: object
+      properties:
+        conflicting_rule_keys:
+          type: array
+          items: { type: string }
+        explanation: { type: string }
+        suggested_relaxations:
+          type: array
+          items: { type: string }
+
+    QualityScore:
+      type: object
+      properties:
+        fairness_index: { type: number }
+        gini_coefficient: { type: number }
+        predicted_total_ot_hours: { type: number }
+        personal_preference_satisfaction_rate: { type: number, nullable: true }
+
+    ScheduleSuggestResult:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [OPTIMAL, TIMEOUT_BEST_EFFORT, INFEASIBLE]
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/AssignmentExplanation'
+        quality_score:
+          $ref: '#/components/schemas/QualityScore'
+        infeasible_reason:
+          $ref: '#/components/schemas/InfeasibleReason'
+        solve_time_seconds: { type: number }
+
+    ForecastPoint:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        p50: { type: number }
+        p90: { type: number }
+        required_fte: { type: object }
+
+    ForecastResponse:
+      type: object
+      properties:
+        ward_id: { type: string }
+        model_version: { type: string }
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/ForecastPoint'
+        feature_importance: { type: object }
+
+    FatigueFactors:
+      type: object
+      properties:
+        cumulative_hours_7d: { type: number }
+        cumulative_hours_14d: { type: number }
+        cumulative_hours_28d: { type: number }
+        consecutive_night_shifts: { type: integer }
+        quick_return_count: { type: integer }
+        rotation_direction_penalty: { type: number }
+        circadian_low_exposure: { type: number }
+        recovery_days_after_night_block: { type: integer }
+
+    FatigueScoreResult:
+      type: object
+      properties:
+        user_id: { type: string }
+        score_date: { type: string, format: date }
+        score: { type: integer, minimum: 0, maximum: 100 }
+        factors:
+          $ref: '#/components/schemas/FatigueFactors'
+        risk_level:
+          type: string
+          enum: [NORMAL, WARNING, CRITICAL]
+        is_estimate: { type: boolean }

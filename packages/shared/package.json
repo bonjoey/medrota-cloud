@@ -1,0 +1,8 @@
+{
+  "name": "@medrota/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Types, Zod schemas, และสัญญา API ร่วมระหว่าง apps/web, apps/api และ services/ai (ดู ADR-0002)",
+  "main": "src/index.ts",
+  "types": "src/index.ts"
+}

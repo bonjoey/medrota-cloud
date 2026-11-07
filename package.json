@@ -1,0 +1,20 @@
+{
+  "name": "medrota-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MedRota Cloud - บริหารจัดการเวรโรงพยาบาล (ดู PRD_MedRotaCloud_v1.0.md และ MVP_ExecutionPlan_v1.0.md)",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run start:dev --workspace=apps/api",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
