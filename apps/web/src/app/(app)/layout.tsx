@@ -20,6 +20,8 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/department-schedule', label: 'ตารางเวรหน่วยงาน', show: () => true },
   { href: '/my-schedule', label: 'เวรของฉัน', show: () => true },
   { href: '/my-calendar', label: 'ปฏิทินของฉัน', show: () => true },
+  { href: '/leaves', label: 'คำขอลา', show: () => true },
+  { href: '/shift-swaps', label: 'แลกเวร', show: () => true },
   { href: '/users', label: 'ผู้ใช้งาน', show: canViewUsers },
   { href: '/wards', label: 'หอผู้ป่วย', show: canManageOrgStructure },
   { href: '/departments', label: 'แผนก', show: canManageOrgStructure },

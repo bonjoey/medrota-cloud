@@ -477,6 +477,99 @@ export interface CalendarEntry {
   crossesMidnight: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// MVP 3 Sprint 9: Leave Request (FR-U04/FR-A13/BP-03) + Shift Swap (FR-U03/FR-A12/BP-02)
+// ---------------------------------------------------------------------------
+
+export type LeaveType = 'SICK' | 'VACATION' | 'PERSONAL' | 'EMERGENCY' | 'OTHER';
+export type LeaveStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
+export type SwapStatus =
+  | 'PENDING_COUNTERPARTY'
+  | 'PENDING_ADMIN_APPROVAL'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'CANCELLED'
+  | 'EXPIRED';
+
+export interface LeaveImpactAssessment {
+  affectedShifts: Array<{ date: string; shiftTypeCode: string; scheduleId: string }>;
+  understaffedShifts: Array<{ date: string; shiftTypeCode: string; currentCount: number; minimumRequired: number }>;
+  note?: string;
+}
+
+export interface LeaveRequestRecord {
+  id: string;
+  userId: string;
+  user: { id: string; fullName: string; employeeCode: string; primaryWardId?: string | null };
+  leaveType: LeaveType;
+  startDate: string;
+  endDate: string;
+  reason: string;
+  attachmentUrl?: string | null;
+  status: LeaveStatus;
+  isEmergency: boolean;
+  impactAssessment?: LeaveImpactAssessment | null;
+  decidedById?: string | null;
+  decidedAt?: string | null;
+  rejectionReason?: string | null;
+  incrementalResolveJobId?: string | null;
+  createdAt: string;
+}
+
+export const leavesApi = {
+  list: (query: { status?: LeaveStatus; userId?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (query.status) params.set('status', query.status);
+    if (query.userId) params.set('userId', query.userId);
+    const qs = params.toString();
+    return get<LeaveRequestRecord[]>(`/leaves${qs ? `?${qs}` : ''}`);
+  },
+  get: (id: string) => get<LeaveRequestRecord>(`/leaves/${id}`),
+  create: (data: {
+    leaveType: LeaveType;
+    startDate: string;
+    endDate: string;
+    reason: string;
+    attachmentUrl?: string;
+    isEmergency?: boolean;
+  }) => post<LeaveRequestRecord>('/leaves', data),
+  cancel: (id: string) => patch<LeaveRequestRecord>(`/leaves/${id}/cancel`),
+  approve: (id: string) => post<LeaveRequestRecord>(`/leaves/${id}/approve`),
+  reject: (id: string, rejectionReason: string) =>
+    post<LeaveRequestRecord>(`/leaves/${id}/reject`, { rejectionReason }),
+};
+
+export interface ShiftSwapRequestRecord {
+  id: string;
+  requesterId: string;
+  requester: { id: string; fullName: string; employeeCode: string };
+  counterpartyId: string;
+  counterparty: { id: string; fullName: string; employeeCode: string };
+  requesterAssignmentId: string;
+  counterpartyAssignmentId: string;
+  status: SwapStatus;
+  constraintCheckResult?: ConflictCheckResult | null;
+  decidedById?: string | null;
+  decidedAt?: string | null;
+  rejectionReason?: string | null;
+  createdAt: string;
+}
+
+export const shiftSwapsApi = {
+  list: (query: { status?: SwapStatus } = {}) => {
+    const qs = query.status ? `?status=${query.status}` : '';
+    return get<ShiftSwapRequestRecord[]>(`/shift-swaps${qs}`);
+  },
+  get: (id: string) => get<ShiftSwapRequestRecord>(`/shift-swaps/${id}`),
+  create: (data: { requesterAssignmentId: string; counterpartyAssignmentId: string }) =>
+    post<ShiftSwapRequestRecord>('/shift-swaps', data),
+  cancel: (id: string) => patch<ShiftSwapRequestRecord>(`/shift-swaps/${id}/cancel`),
+  counterpartyDecision: (id: string, approve: boolean, reason?: string) =>
+    post<ShiftSwapRequestRecord>(`/shift-swaps/${id}/counterparty-decision`, { approve, reason }),
+  adminDecision: (id: string, approve: boolean, rejectionReason?: string) =>
+    post<ShiftSwapRequestRecord>(`/shift-swaps/${id}/admin-decision`, { approve, rejectionReason }),
+};
+
 export const nursePortalApi = {
   mySchedule: (month: number, year: number) => get<MyScheduleResponse>(`/my/schedule?month=${month}&year=${year}`),
   myCalendar: (month: number, year: number) => get<CalendarEntry[]>(`/my/calendar?month=${month}&year=${year}`),

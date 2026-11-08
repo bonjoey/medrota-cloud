@@ -43,3 +43,12 @@ export function canApproveSchedule(role: Role) {
 export function canExportSchedule(role: Role) {
   return role === 'SUPER_ADMIN' || role === 'WARD_ADMIN' || role === 'HEAD_NURSE';
 }
+
+// MVP 3 Sprint 9: Leave Request (FR-A13) + Shift Swap (FR-A12) — approve/reject ขั้นสุดท้าย
+export function canApproveLeave(role: Role) {
+  return role === 'SUPER_ADMIN' || role === 'WARD_ADMIN' || role === 'HEAD_NURSE';
+}
+
+export function canApproveSwap(role: Role) {
+  return role === 'SUPER_ADMIN' || role === 'WARD_ADMIN' || role === 'HEAD_NURSE';
+}

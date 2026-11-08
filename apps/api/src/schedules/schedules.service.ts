@@ -5,6 +5,7 @@ import { CreateScheduleDto } from './dto/create-schedule.dto';
 import { UpsertAssignmentDto } from './dto/upsert-assignment.dto';
 import { computeShiftHours } from '../common/utils/shift-time.util';
 import { assertWardScope, preferWardSpecificRules } from '../common/utils/scheduling-rules.util';
+import { fetchApprovedLeavesPayload } from '../common/utils/approved-leaves.util';
 import { AiServiceClient, ConflictCheckResult } from '../ai-service/ai-service.client';
 
 interface ActorContext {
@@ -269,7 +270,10 @@ export class SchedulesService {
   async checkConflicts(id: string, actor: ActorContext): Promise<ConflictCheckResult> {
     const schedule = await this.getScheduleOrThrow(id, actor);
 
-    const [assignments, rules, shiftTypes] = await Promise.all([
+    const monthStart = new Date(schedule.year, schedule.month - 1, 1);
+    const monthEnd = new Date(schedule.year, schedule.month, 0);
+
+    const [assignments, rules, shiftTypes, approvedLeaves] = await Promise.all([
       this.prisma.scheduleAssignment.findMany({
         where: { scheduleId: id },
         include: { shiftType: true },
@@ -283,6 +287,10 @@ export class SchedulesService {
         },
       }),
       this.prisma.shiftType.findMany({ where: { hospitalId: actor.hospitalId } }),
+      // FR-A10/APPROVED_LEAVE_BLOCK (MVP 3 Sprint 9): เดิมไม่ได้ส่งข้อมูลนี้ให้ services/ai
+      // เลย ทำให้ Approve Gate (ด้านล่าง) ไม่เคยจับการจัดเวรซ้อนกับวันลาที่อนุมัติแล้ว —
+      // แก้ให้สอดคล้องกับ ai-job.service.ts (FR-AI01) ที่ส่งข้อมูลนี้อยู่แล้ว
+      fetchApprovedLeavesPayload(this.prisma, schedule.wardId, monthStart, monthEnd),
     ]);
 
     const dedupedRules = preferWardSpecificRules(rules);
@@ -311,6 +319,7 @@ export class SchedulesService {
         parameters: r.parameters as unknown as Record<string, unknown>,
         weight: r.weight ?? undefined,
       })),
+      approved_leaves: approvedLeaves,
     });
 
     return result;

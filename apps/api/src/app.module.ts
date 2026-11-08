@@ -14,6 +14,8 @@ import { SchedulesModule } from './schedules/schedules.module';
 import { NursePortalModule } from './nurse-portal/nurse-portal.module';
 import { ReportsModule } from './reports/reports.module';
 import { AiJobModule } from './ai-job/ai-job.module';
+import { LeavesModule } from './leaves/leaves.module';
+import { ShiftSwapsModule } from './shift-swaps/shift-swaps.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -33,6 +35,8 @@ import { RolesGuard } from './common/guards/roles.guard';
     NursePortalModule,
     ReportsModule,
     AiJobModule,
+    LeavesModule,
+    ShiftSwapsModule,
   ],
   providers: [
     // ลำดับสำคัญ: JwtAuthGuard ต้องรันก่อน RolesGuard เสมอ (ต้องมี req.user ก่อนจึงเช็ค role ได้)
