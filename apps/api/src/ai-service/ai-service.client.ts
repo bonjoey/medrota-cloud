@@ -16,6 +16,11 @@ export interface AiShiftTypeMeta {
   startTime: string;
   endTime: string;
   crossesMidnight: boolean;
+  /** MVP 2 Sprint 6: ใช้คำนวณ QualityScore.predicted_total_ot_hours ฝั่ง services/ai
+   * (shift_hours() * จำนวนเวรที่ compensationRate > 1.0) — ไม่ใช้ใน check-conflicts
+   * แต่ต้องส่งมาด้วยเสมอเพราะ schema ฝั่ง Python (ScheduleSuggestRequest.shift_types)
+   * เป็น dict เดียวกันที่ reuse กับ ConflictCheckRequestPayload */
+  compensationRate: number;
 }
 
 export interface ConflictCheckAssignmentPayload {

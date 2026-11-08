@@ -6,10 +6,13 @@ import { useAuth } from '@/lib/auth-context';
 import { canApproveSchedule, canEditSchedule, canExportSchedule } from '@/lib/roles';
 import {
   ApiError,
+  aiJobsApi,
   downloadScheduleExport,
   schedulesApi,
   shiftTypesApi,
   usersApi,
+  type AiJob,
+  type AssignmentExplanation,
   type ConflictCheckResult,
   type ScheduleAssignment,
   type ScheduleChangeLog,
@@ -66,6 +69,12 @@ export default function ScheduleDetailPage() {
   const [changeLogs, setChangeLogs] = useState<ScheduleChangeLog[] | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
 
+  // FR-AI01 (MVP 2 Sprint 5): Auto-suggest ด้วย AI — preview overlay + quality metrics
+  const [aiJob, setAiJob] = useState<AiJob | null>(null);
+  const [aiJobError, setAiJobError] = useState<string | null>(null);
+  const [explainCell, setExplainCell] = useState<AssignmentExplanation | null>(null);
+  const [applyingAiJob, setApplyingAiJob] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -84,6 +93,20 @@ export default function ScheduleDetailPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Poll สถานะงาน AI ทุก 2 วินาทีจนกว่าจะเสร็จ (SUCCEEDED/FAILED) — ADR-0002 "NestJS poll ผ่าน Job ID"
+  useEffect(() => {
+    if (!aiJob || aiJob.status === 'SUCCEEDED' || aiJob.status === 'FAILED') return;
+    const timer = setInterval(async () => {
+      try {
+        const updated = await aiJobsApi.getStatus(aiJob.id);
+        setAiJob(updated);
+      } catch (err) {
+        setAiJobError(err instanceof ApiError ? err.message : 'ตรวจสอบสถานะงาน AI ไม่สำเร็จ');
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [aiJob]);
 
   const daysInMonth = useMemo(() => {
     if (!schedule) return 0;
@@ -111,6 +134,15 @@ export default function ScheduleDetailPage() {
     );
     return set;
   }, [conflictResult]);
+
+  // ผลเสนอของ AI ที่ยังไม่ Apply — แสดงเป็น Preview Overlay บน Grid เดียวกับตารางจริง
+  const previewMap = useMemo(() => {
+    const map = new Map<string, AssignmentExplanation>();
+    if (aiJob?.status === 'SUCCEEDED') {
+      aiJob.resultPayload?.assignments.forEach((a) => map.set(`${a.user_id}_${a.date.slice(0, 10)}`, a));
+    }
+    return map;
+  }, [aiJob]);
 
   if (!user) return null;
   if (loading) return <Spinner />;
@@ -155,6 +187,44 @@ export default function ScheduleDetailPage() {
     } finally {
       setChecking(false);
     }
+  }
+
+  async function startAutoSuggest() {
+    setAiJobError(null);
+    setExplainCell(null);
+    try {
+      const { aiJobId, status } = await aiJobsApi.enqueueScheduleSuggest({
+        wardId: schedule!.wardId,
+        month: schedule!.month,
+        year: schedule!.year,
+      });
+      setAiJob({ id: aiJobId, jobType: 'SCHEDULE_SUGGEST', status });
+    } catch (err) {
+      setAiJobError(err instanceof ApiError ? err.message : 'ขอให้ AI จัดเวรไม่สำเร็จ');
+    }
+  }
+
+  async function applyAiJob() {
+    if (!aiJob) return;
+    setApplyingAiJob(true);
+    setAiJobError(null);
+    try {
+      await aiJobsApi.apply(aiJob.id);
+      setAiJob(null);
+      setExplainCell(null);
+      await load();
+    } catch (err) {
+      setAiJobError(err instanceof ApiError ? err.message : 'นำผลเสนอของ AI ไปใช้ไม่สำเร็จ');
+    } finally {
+      setApplyingAiJob(false);
+    }
+  }
+
+  function discardAiJob() {
+    // ไม่ต้องเรียก API — ผลเสนอที่ไม่ได้ Apply จะไม่ถูกนำไปใช้อยู่แล้ว (AiJob แค่ค้างใน DB เฉย ๆ)
+    setAiJob(null);
+    setAiJobError(null);
+    setExplainCell(null);
   }
 
   async function toggleChangeLogs() {
@@ -242,6 +312,15 @@ export default function ScheduleDetailPage() {
         <Button variant="secondary" onClick={handleCheckConflicts} disabled={checking}>
           {checking ? 'กำลังตรวจสอบ...' : 'ตรวจสอบความขัดแย้ง (FR-A10)'}
         </Button>
+        {editable && (
+          <Button
+            variant="secondary"
+            onClick={startAutoSuggest}
+            disabled={aiJob !== null && aiJob.status !== 'SUCCEEDED' && aiJob.status !== 'FAILED'}
+          >
+            ✨ ให้ AI จัดเวรให้ (Auto-suggest)
+          </Button>
+        )}
         <Button variant="ghost" onClick={toggleChangeLogs}>
           {logsOpen ? 'ซ่อนประวัติการแก้ไข' : 'ดูประวัติการแก้ไข'}
         </Button>
@@ -273,6 +352,112 @@ export default function ScheduleDetailPage() {
             </div>
           )}
         </Alert>
+      )}
+
+      {/* FR-AI01 (MVP 2 Sprint 5): สถานะงาน AI + Preview Overlay + Quality Metrics */}
+      {aiJob && (
+        <Card className="mb-4">
+          {aiJobError && <Alert kind="error">{aiJobError}</Alert>}
+
+          {(aiJob.status === 'QUEUED' || aiJob.status === 'RUNNING') && (
+            <div className="flex items-center gap-3">
+              <Spinner />
+              <span className="text-sm text-gray-500">
+                AI กำลังจัดเวร... ({aiJob.status === 'QUEUED' ? 'อยู่ในคิว' : 'กำลังประมวลผล'})
+              </span>
+            </div>
+          )}
+
+          {aiJob.status === 'FAILED' && (
+            <div>
+              <Alert kind="error">
+                <p className="font-medium">AI จัดเวรให้ไม่สำเร็จ (Infeasible)</p>
+                <p className="mt-1">{aiJob.infeasibleReason?.explanation ?? 'เกิดข้อผิดพลาดไม่ทราบสาเหตุ'}</p>
+                {aiJob.infeasibleReason && aiJob.infeasibleReason.conflicting_rule_keys.length > 0 && (
+                  <p className="mt-1 text-xs">
+                    เงื่อนไขที่ขัดแย้งกัน: {aiJob.infeasibleReason.conflicting_rule_keys.join(', ')}
+                  </p>
+                )}
+                {aiJob.infeasibleReason && aiJob.infeasibleReason.suggested_relaxations.length > 0 && (
+                  <ul className="mt-1 list-disc pl-5 text-xs">
+                    {aiJob.infeasibleReason.suggested_relaxations.map((r, i) => (
+                      <li key={i}>{r}</li>
+                    ))}
+                  </ul>
+                )}
+              </Alert>
+              <Button variant="ghost" onClick={discardAiJob} className="mt-2">
+                ปิด
+              </Button>
+            </div>
+          )}
+
+          {aiJob.status === 'SUCCEEDED' && aiJob.resultPayload && (
+            <div>
+              <p className="mb-2 font-medium">
+                ผลเสนอของ AI {aiJob.resultPayload.status === 'TIMEOUT_BEST_EFFORT' ? '(หมดเวลา — ใช้คำตอบที่ดีที่สุดที่หาได้)' : '(คำตอบที่ดีที่สุด)'}
+              </p>
+              <div className="mb-3 flex flex-wrap gap-4 text-sm">
+                <div>
+                  <span className="text-gray-400">ดัชนีความเป็นธรรม (Fairness): </span>
+                  <span className="font-medium">
+                    {aiJob.resultPayload.quality_score?.fairness_index != null
+                      ? `${(aiJob.resultPayload.quality_score.fairness_index * 100).toFixed(0)}%`
+                      : '-'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400">Gini Coefficient: </span>
+                  <span className="font-medium">
+                    {aiJob.resultPayload.quality_score?.gini_coefficient?.toFixed(2) ?? '-'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400">คาด OT รวม: </span>
+                  <span className="font-medium">
+                    {aiJob.resultPayload.quality_score?.predicted_total_ot_hours?.toFixed(1) ?? '-'} ชม.
+                  </span>
+                </div>
+              </div>
+              <p className="mb-2 text-xs text-gray-400">
+                ช่องสีม่วงประ (เส้นประ) บนตารางด้านล่างคือข้อเสนอของ AI — คลิกช่องนั้นเพื่อดูเหตุผล
+                แล้วกด &quot;ใช้ผลเสนอนี้&quot; เพื่อบันทึกจริง
+              </p>
+              <div className="flex gap-2">
+                <Button onClick={applyAiJob} disabled={applyingAiJob}>
+                  {applyingAiJob ? 'กำลังบันทึก...' : 'ใช้ผลเสนอนี้ (Apply)'}
+                </Button>
+                <Button variant="secondary" onClick={discardAiJob} disabled={applyingAiJob}>
+                  ไม่ใช้ (Discard)
+                </Button>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* FR-AI01 (AIP-01): Explain Popover ของช่องที่เลือกบน Preview */}
+      {explainCell && (
+        <Card className="mb-4 border-l-4 border-violet-600">
+          <div className="mb-1 flex items-center justify-between">
+            <p className="font-medium">
+              เหตุผลของ AI — {explainCell.date} ({explainCell.shift_type_code})
+            </p>
+            <button onClick={() => setExplainCell(null)} className="text-sm text-gray-400 hover:text-gray-700">
+              ปิด ✕
+            </button>
+          </div>
+          <ul className="list-disc pl-5 text-sm text-gray-700">
+            {explainCell.reasons.map((r, i) => (
+              <li key={i}>{r}</li>
+            ))}
+          </ul>
+          {explainCell.change_impact_if_swapped && (
+            <p className="mt-2 text-sm text-gray-500">
+              <span className="font-medium">ผลกระทบถ้าเปลี่ยนตัว:</span> {explainCell.change_impact_if_swapped}
+            </p>
+          )}
+        </Card>
       )}
 
       {/* FR-A09: ประวัติการแก้ไข */}
@@ -359,6 +544,7 @@ export default function ScheduleDetailPage() {
                 {dateStrings.map((d) => {
                   const assignment = assignmentMap.get(`${person.id}_${d}`);
                   const hasViolation = violationKeys.has(`${person.id}_${d}`);
+                  const preview = previewMap.get(`${person.id}_${d}`);
                   return (
                     <td
                       key={d}
@@ -370,20 +556,40 @@ export default function ScheduleDetailPage() {
                         if (shiftTypeId) handleDrop(person.id, d, shiftTypeId);
                       }}
                       onClick={() => {
-                        if (editable && assignment) handleRemove(assignment.id);
+                        if (preview) {
+                          setExplainCell(preview);
+                        } else if (editable && assignment) {
+                          handleRemove(assignment.id);
+                        }
                       }}
-                      className={`border-b border-gray-100 p-1 text-center ${editable ? 'cursor-pointer' : ''} ${
-                        hasViolation ? 'bg-red-50 ring-1 ring-inset ring-risk-critical' : ''
+                      className={`border-b border-gray-100 p-1 text-center ${
+                        editable || preview ? 'cursor-pointer' : ''
+                      } ${hasViolation ? 'bg-red-50 ring-1 ring-inset ring-risk-critical' : ''} ${
+                        preview ? 'bg-violet-50 ring-1 ring-inset ring-violet-400' : ''
                       }`}
-                      title={assignment ? `${assignment.shiftType.name}${editable ? ' (คลิกเพื่อลบ)' : ''}` : undefined}
+                      title={
+                        preview
+                          ? `AI เสนอเวร ${preview.shift_type_code} (คลิกเพื่อดูเหตุผล)`
+                          : assignment
+                            ? `${assignment.shiftType.name}${editable ? ' (คลิกเพื่อลบ)' : ''}`
+                            : undefined
+                      }
                     >
-                      {assignment && (
+                      {preview ? (
                         <span
-                          className="inline-block w-8 rounded text-xs font-medium text-white"
-                          style={{ backgroundColor: SHIFT_COLORS[assignment.shiftType.code] ?? '#059669' }}
+                          className="inline-block w-8 rounded border-2 border-dashed border-violet-600 bg-white text-xs font-medium text-violet-700"
                         >
-                          {assignment.shiftType.code}
+                          {preview.shift_type_code}
                         </span>
+                      ) : (
+                        assignment && (
+                          <span
+                            className="inline-block w-8 rounded text-xs font-medium text-white"
+                            style={{ backgroundColor: SHIFT_COLORS[assignment.shiftType.code] ?? '#059669' }}
+                          >
+                            {assignment.shiftType.code}
+                          </span>
+                        )
                       )}
                     </td>
                   );

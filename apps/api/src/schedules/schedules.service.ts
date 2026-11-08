@@ -1,9 +1,10 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { CreateScheduleDto } from './dto/create-schedule.dto';
 import { UpsertAssignmentDto } from './dto/upsert-assignment.dto';
 import { computeShiftHours } from '../common/utils/shift-time.util';
+import { assertWardScope, preferWardSpecificRules } from '../common/utils/scheduling-rules.util';
 import { AiServiceClient, ConflictCheckResult } from '../ai-service/ai-service.client';
 
 interface ActorContext {
@@ -36,18 +37,12 @@ export class SchedulesService {
     private readonly aiServiceClient: AiServiceClient,
   ) {}
 
-  private assertWardScope(wardId: string, actor: ActorContext) {
-    if (actor.role === 'HEAD_NURSE' && wardId !== actor.wardId) {
-      throw new ForbiddenException('ไม่มีสิทธิ์เข้าถึงตารางเวรของ Ward อื่น');
-    }
-  }
-
   async create(dto: CreateScheduleDto, actor: ActorContext) {
     const ward = await this.prisma.ward.findFirst({
       where: { id: dto.wardId, hospitalId: actor.hospitalId },
     });
     if (!ward) throw new NotFoundException('ไม่พบ Ward ที่ระบุ');
-    this.assertWardScope(dto.wardId, actor);
+    assertWardScope(dto.wardId, actor);
 
     const existing = await this.prisma.schedule.findUnique({
       where: { wardId_month_year: { wardId: dto.wardId, month: dto.month, year: dto.year } },
@@ -99,7 +94,7 @@ export class SchedulesService {
       where: { id, hospitalId: actor.hospitalId },
     });
     if (!schedule) throw new NotFoundException('ไม่พบตารางเวร');
-    this.assertWardScope(schedule.wardId, actor);
+    assertWardScope(schedule.wardId, actor);
     return schedule;
   }
 
@@ -290,7 +285,7 @@ export class SchedulesService {
       this.prisma.shiftType.findMany({ where: { hospitalId: actor.hospitalId } }),
     ]);
 
-    const dedupedRules = this.preferWardSpecificRules(rules);
+    const dedupedRules = preferWardSpecificRules(rules);
 
     const result = await this.aiServiceClient.checkConflicts({
       hospital_id: actor.hospitalId,
@@ -308,6 +303,7 @@ export class SchedulesService {
         startTime: s.startTime,
         endTime: s.endTime,
         crossesMidnight: s.crossesMidnight,
+        compensationRate: Number(s.compensationRate),
       })),
       rules: dedupedRules.map((r) => ({
         rule_key: r.ruleKey,
@@ -318,21 +314,6 @@ export class SchedulesService {
     });
 
     return result;
-  }
-
-  private preferWardSpecificRules<
-    T extends { wardId: string | null; ruleKey: string; parameters: unknown },
-  >(rules: T[]): T[] {
-    const keyOf = (r: T) => {
-      const shiftCode =
-        typeof r.parameters === 'object' && r.parameters !== null && 'shiftCode' in r.parameters
-          ? (r.parameters as Record<string, unknown>).shiftCode
-          : undefined;
-      return `${r.ruleKey}::${shiftCode ?? ''}`;
-    };
-
-    const wardSpecificKeys = new Set(rules.filter((r) => r.wardId !== null).map(keyOf));
-    return rules.filter((r) => r.wardId !== null || !wardSpecificKeys.has(keyOf(r)));
   }
 
   // -------------------------------------------------------------------------

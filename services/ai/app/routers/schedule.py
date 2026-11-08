@@ -10,17 +10,20 @@ from app.solver.constraint_model import check_conflicts, solve_schedule
 
 router = APIRouter(prefix="/schedules", tags=["scheduling"])
 
-# Sprint 0/5 scaffold: เก็บ Job ใน memory ก่อน — Production ต้องย้ายไป Redis/BullMQ
-# ตาม ADR-0002 (NestJS ส่งงาน, Python worker ดึงงานจาก Queue จริง)
+# MVP 2 Sprint 5: เส้นทางจริงของ Production คือ NestJS ส่งงานเข้า Queue (Redis/BullMQ)
+# โดยตรง แล้ว app/worker.py (Python) เป็นผู้ดึงงานไปประมวลผล — ไม่ผ่าน HTTP เลย (ดู
+# ADR-0002 + docker-compose.yml service "ai-worker") 2 endpoint นี้ "/suggest" และ
+# "/suggest/{job_id}" จึงไม่ได้ถูกเรียกจาก NestJS อีกต่อไปในโหมดใช้งานจริง — เหลือไว้
+# เฉพาะสำหรับเรียกตรงด้วยมือ (manual/UAT smoke test) เท่านั้น ใช้ in-memory dict เดิม
+# ซึ่งหายไปทุกครั้งที่ restart service (ยอมรับได้เพราะไม่ใช่ production path แล้ว)
 _JOBS: dict[str, ScheduleSuggestResult] = {}
 
 
 @router.post("/suggest")
 def suggest_schedule(request: ScheduleSuggestRequest) -> dict[str, str]:
     """
-    POST /api/v1/ai/schedules/suggest — คืนค่าเป็น Job ID แบบ Asynchronous
-    (scaffold นี้ยังรันแบบ synchronous ภายใน request เดียวเพื่อความง่ายของ Sprint 0;
-    ก่อนขึ้น MVP 2 Sprint 5 ต้องย้ายเป็น background worker จริงตาม ADR-0002)
+    POST /api/v1/ai/schedules/suggest — รันแบบ synchronous ภายใน request เดียว
+    สำหรับเรียกตรงด้วยมือเท่านั้น (ดูหมายเหตุด้านบน) ไม่ใช่เส้นทางที่ NestJS ใช้จริง
     """
     job_id = str(uuid.uuid4())
     result = solve_schedule(request)

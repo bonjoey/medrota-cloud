@@ -264,6 +264,47 @@ export interface ScheduleChangeLog {
   createdAt: string;
 }
 
+// FR-AI01 (MVP 2): Auto-suggest ด้วย AI — ดู ADR-0002 + services/ai/app/schemas.py
+export type AiJobStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+
+export interface AssignmentExplanation {
+  user_id: string;
+  date: string;
+  shift_type_code: string;
+  reasons: string[];
+  change_impact_if_swapped?: string | null;
+}
+
+export interface QualityScore {
+  fairness_index?: number | null;
+  gini_coefficient?: number | null;
+  predicted_total_ot_hours?: number | null;
+  personal_preference_satisfaction_rate?: number | null;
+}
+
+export interface InfeasibleReason {
+  conflicting_rule_keys: string[];
+  explanation: string;
+  suggested_relaxations: string[];
+}
+
+export interface ScheduleSuggestResultPayload {
+  status: 'OPTIMAL' | 'TIMEOUT_BEST_EFFORT' | 'INFEASIBLE';
+  assignments: AssignmentExplanation[];
+  quality_score?: QualityScore | null;
+  infeasible_reason?: InfeasibleReason | null;
+  solve_time_seconds: number;
+}
+
+export interface AiJob {
+  id: string;
+  jobType: 'SCHEDULE_SUGGEST' | 'INCREMENTAL_RESOLVE' | 'FORECAST_TRAIN' | 'FATIGUE_BATCH';
+  status: AiJobStatus;
+  wardId?: string | null;
+  resultPayload?: ScheduleSuggestResultPayload | null;
+  infeasibleReason?: InfeasibleReason | null;
+}
+
 // ---------------------------------------------------------------------------
 // API namespaces
 // ---------------------------------------------------------------------------
@@ -392,6 +433,17 @@ export const schedulesApi = {
   publish: (id: string) => post<Schedule>(`/schedules/${id}/publish`),
   sendBack: (id: string, reason: string) => post<Schedule>(`/schedules/${id}/send-back`, { reason }),
   exportUrl: (id: string, format: 'pdf' | 'xlsx') => `${BASE}/schedules/${id}/export?format=${format}`,
+  // FR-AI01 ขั้นที่ 5 (MVP 2 Sprint 8): ให้ AI จัดเวรใหม่เฉพาะช่วงวันที่ระบุ
+  incrementalResolve: (id: string, data: { startDate: string; endDate: string; reason?: string }) =>
+    post<{ aiJobId: string; status: AiJobStatus }>(`/schedules/${id}/incremental-resolve`, data),
+};
+
+/** FR-AI01 (MVP 2 Sprint 5): Auto-suggest ตารางเวรด้วย AI — รันแบบ Asynchronous Job Queue */
+export const aiJobsApi = {
+  enqueueScheduleSuggest: (data: { wardId: string; month: number; year: number }) =>
+    post<{ aiJobId: string; status: AiJobStatus }>('/ai-jobs/schedule-suggest', data),
+  getStatus: (id: string) => get<AiJob>(`/ai-jobs/${id}`),
+  apply: (id: string) => post<Schedule>(`/ai-jobs/${id}/apply`),
 };
 
 /** ไม่มีฟิลด์ user เพราะ /my/schedule กรองเฉพาะเวรของตัวเอง (userId = actor.userId) อยู่แล้ว */

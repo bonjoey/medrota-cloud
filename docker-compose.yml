@@ -35,6 +35,9 @@ services:
       context: ./apps/api
     env_file:
       - ./apps/api/.env
+    environment:
+      REDIS_URL: redis://redis:6379
+      AI_JOB_QUEUE_NAME: ai-jobs
     ports:
       - '4000:4000'
     depends_on:
@@ -48,8 +51,27 @@ services:
   ai:
     build:
       context: ./services/ai
+    environment:
+      REDIS_URL: redis://redis:6379
+      AI_JOB_QUEUE_NAME: ai-jobs
     ports:
       - '8000:8000'
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # MVP 2 Sprint 5 (ADR-0002): process แยกจาก "ai" (uvicorn) — ดึงงาน FR-AI01 (Suggest /
+  # Incremental Re-solve) จาก Queue "ai-jobs" บน Redis โดยตรง ไม่ผ่าน HTTP เลย ต้องแยก
+  # service เพราะ app/worker.py เป็น asyncio loop ของตัวเอง รันพร้อม uvicorn ใน container
+  # เดียวกันไม่ได้โดยไม่มี process manager เพิ่ม
+  ai-worker:
+    build:
+      context: ./services/ai
+    command: ['python', '-m', 'app.worker']
+    environment:
+      REDIS_URL: redis://redis:6379
+      AI_JOB_QUEUE_NAME: ai-jobs
+      AI_WORKER_CONCURRENCY: '2'
     depends_on:
       redis:
         condition: service_healthy

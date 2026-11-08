@@ -39,6 +39,14 @@ class RequiredFte(BaseModel):
     na: int
 
 
+class ResolveWindow(BaseModel):
+    """FR-AI01 ขั้นที่ 5 (MVP 2 Sprint 8): ช่วงวันที่ยอมให้ Solver เปลี่ยนแปลงได้
+    ในโหมด Incremental Re-solve — วันนอกช่วงนี้ถูกตรึงตาม fixed_assignments ทั้งหมด"""
+
+    start_date: date
+    end_date: date
+
+
 class ScheduleSuggestRequest(BaseModel):
     """FR-AI01: Input ของ POST /ai/schedules/suggest"""
 
@@ -50,6 +58,11 @@ class ScheduleSuggestRequest(BaseModel):
     shift_types: list[dict[str, Any]]
     rules: list[SchedulingRule]
     approved_leaves: list[dict[str, Any]] = []
+    fixed_assignments: list[ConflictCheckAssignment] = []
+    """MVP 2 Sprint 8: เวรที่มีอยู่แล้วและต้อง "ตรึง" ไว้ไม่ให้ Solver แก้ — ใช้คู่กับ
+    resolve_window เพื่อทำ Incremental Re-solve (จัดใหม่เฉพาะช่วงที่ได้รับผลกระทบ)
+    ถ้าไม่ส่ง resolve_window มาด้วย ฟิลด์นี้จะถูกเมิน (ถือเป็นการจัดใหม่ทั้งเดือนตามปกติ)"""
+    resolve_window: ResolveWindow | None = None
     required_fte: list[RequiredFte] = []  # จาก FR-AI02 ถ้ามี, ไม่มีก็ fallback เป็นนโยบายขั้นต่ำจาก rules
     fatigue_scores: dict[str, float] = {}  # user_id -> score ล่าสุด (Soft Constraint วงจรปิด)
     objective_weights: dict[str, float] = {}  # ผู้บริหารปรับได้ (PRD ขั้นที่ 2)
