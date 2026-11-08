@@ -36,6 +36,10 @@ services:
     env_file:
       - ./apps/api/.env
     environment:
+      # Override ค่า localhost ใน .env.example ด้วย hostname ของ container เครือข่าย
+      # เดียวกัน (docker-compose `environment` มีสิทธิ์เหนือ `env_file` เสมอ)
+      DATABASE_URL: postgresql://medrota:medrota@postgres:5432/medrota_dev?schema=public
+      AI_SERVICE_BASE_URL: http://ai:8000
       REDIS_URL: redis://redis:6379
       AI_JOB_QUEUE_NAME: ai-jobs
     ports:
