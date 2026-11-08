@@ -198,4 +198,105 @@ export class ReportsService {
       doc.end();
     });
   }
+
+  // ---------------------------------------------------------------------------
+  // FR-R07 (Could Have, MVP 3 Sprint 10): รายงานประวัติการแลกเวรประจำเดือน
+  // ---------------------------------------------------------------------------
+  async shiftSwapHistory(actor: ActorContext, query: { month: number; year: number }) {
+    const monthStart = new Date(query.year, query.month - 1, 1);
+    const monthEnd = new Date(query.year, query.month, 1);
+
+    const where: Record<string, unknown> = {
+      createdAt: { gte: monthStart, lt: monthEnd },
+      requester: { hospitalId: actor.hospitalId },
+    };
+    if (actor.role === 'HEAD_NURSE') {
+      where.OR = [{ requester: { primaryWardId: actor.wardId } }, { counterparty: { primaryWardId: actor.wardId } }];
+    }
+
+    const swaps = await this.prisma.shiftSwapRequest.findMany({
+      where,
+      include: {
+        requester: { select: { id: true, fullName: true, employeeCode: true, primaryWard: { select: { name: true } } } },
+        counterparty: { select: { id: true, fullName: true, employeeCode: true, primaryWard: { select: { name: true } } } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const byStatus: Record<string, number> = {};
+    const byWard = new Map<string, number>();
+    const byUser = new Map<string, { userId: string; fullName: string; count: number }>();
+
+    for (const s of swaps) {
+      byStatus[s.status] = (byStatus[s.status] ?? 0) + 1;
+
+      const wardName = s.requester.primaryWard?.name ?? 'ไม่ระบุ Ward';
+      byWard.set(wardName, (byWard.get(wardName) ?? 0) + 1);
+
+      for (const person of [s.requester, s.counterparty]) {
+        const row = byUser.get(person.id) ?? { userId: person.id, fullName: person.fullName, count: 0 };
+        row.count += 1;
+        byUser.set(person.id, row);
+      }
+    }
+
+    return {
+      month: query.month,
+      year: query.year,
+      total: swaps.length,
+      byStatus,
+      byWard: Array.from(byWard.entries()).map(([wardName, count]) => ({ wardName, count })),
+      byUser: Array.from(byUser.values()).sort((a, b) => b.count - a.count),
+      items: swaps,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // FR-R08 (Could Have, MVP 3 Sprint 10): รายงานวิเคราะห์การลาหยุดประจำปี
+  // ---------------------------------------------------------------------------
+  async leaveAnalysis(actor: ActorContext, query: { year: number }) {
+    const yearStart = new Date(query.year, 0, 1);
+    const yearEnd = new Date(query.year + 1, 0, 1);
+
+    const where: Record<string, unknown> = {
+      startDate: { lt: yearEnd },
+      endDate: { gte: yearStart },
+      user: { hospitalId: actor.hospitalId },
+    };
+    if (actor.role === 'HEAD_NURSE') {
+      where.user = { hospitalId: actor.hospitalId, primaryWardId: actor.wardId };
+    }
+
+    const leaves = await this.prisma.leaveRequest.findMany({
+      where,
+      include: { user: { select: { id: true, fullName: true, primaryWard: { select: { name: true } } } } },
+      orderBy: { startDate: 'asc' },
+    });
+
+    const byType: Record<string, number> = {};
+    const byStatus: Record<string, number> = {};
+    const byWard = new Map<string, number>();
+    const byMonth = Array.from({ length: 12 }, () => 0);
+
+    for (const l of leaves) {
+      byType[l.leaveType] = (byType[l.leaveType] ?? 0) + 1;
+      byStatus[l.status] = (byStatus[l.status] ?? 0) + 1;
+      byWard.set(l.user.primaryWard?.name ?? 'ไม่ระบุ Ward', (byWard.get(l.user.primaryWard?.name ?? 'ไม่ระบุ Ward') ?? 0) + 1);
+      byMonth[l.startDate.getMonth()] += 1;
+    }
+
+    const decided = (byStatus['APPROVED'] ?? 0) + (byStatus['REJECTED'] ?? 0);
+    const approvalRate = decided > 0 ? Math.round(((byStatus['APPROVED'] ?? 0) / decided) * 1000) / 10 : null;
+
+    return {
+      year: query.year,
+      total: leaves.length,
+      byType,
+      byStatus,
+      approvalRatePercent: approvalRate,
+      byWard: Array.from(byWard.entries()).map(([wardName, count]) => ({ wardName, count })),
+      byMonth,
+      items: leaves,
+    };
+  }
 }

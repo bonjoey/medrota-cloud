@@ -276,7 +276,13 @@ function CreateSwapModal({ onClose, onCreated }: { onClose: () => void; onCreate
       .finally(() => setLoading(false));
   }, [month, year]);
 
-  const counterpartyOptions = (deptSchedule?.assignments ?? []).filter((a) => a.userId !== user?.id);
+  // FR-U03: "ค้นหาเพื่อนร่วมงานที่ตรงคุณสมบัติ" — คัดกรองให้เหลือเฉพาะระดับตำแหน่งเดียวกับ
+  // ตนเอง (หาระดับตำแหน่งของตนเองจากตารางเวรหน่วยงาน เพราะ /my/schedule ไม่แนบ user object
+  // มาด้วย — Backend บังคับกฎนี้ซ้ำอีกชั้นที่ shift-swaps.service.ts เสมอ ไม่พึ่ง UI ฝั่งเดียว)
+  const myPositionLevel = (deptSchedule?.assignments ?? []).find((a) => a.userId === user?.id)?.user.positionLevel;
+  const counterpartyOptions = (deptSchedule?.assignments ?? []).filter(
+    (a) => a.userId !== user?.id && (!myPositionLevel || a.user.positionLevel === myPositionLevel),
+  );
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

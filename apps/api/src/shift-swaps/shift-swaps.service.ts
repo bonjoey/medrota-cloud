@@ -55,6 +55,14 @@ export class ShiftSwapsService {
     if (requesterAssignment.scheduleId !== counterpartyAssignment.scheduleId) {
       throw new BadRequestException('แลกเวรได้เฉพาะภายในตารางเวรเดือนเดียวกันเท่านั้น');
     }
+    // FR-U03: "ค้นหาเพื่อนร่วมงานที่ตรงคุณสมบัติ" — ตีความคุณสมบัติเป็นระดับตำแหน่ง (RN/PN/NA)
+    // เพราะเป็นมิติเดียวที่ schema เก็บไว้ (ความเชี่ยวชาญเฉพาะทาง/ใบอนุญาตไม่ได้โมเดลไว้ในนี้)
+    // — ห้ามแลกข้ามระดับ เพราะจะทำให้โครงสร้างกำลังคนต่อเวรผิดจากแผนที่ AI/Admin ตั้งใจไว้
+    if (requesterAssignment.user.positionLevel !== counterpartyAssignment.user.positionLevel) {
+      throw new BadRequestException(
+        `แลกเวรได้เฉพาะระหว่างบุคลากรระดับตำแหน่งเดียวกัน (${requesterAssignment.user.positionLevel} ↔ ${counterpartyAssignment.user.positionLevel})`,
+      );
+    }
 
     const constraintCheckResult = await this.previewSwapConflicts(
       requesterAssignment.scheduleId,

@@ -438,6 +438,34 @@ export const schedulesApi = {
     post<{ aiJobId: string; status: AiJobStatus }>(`/schedules/${id}/incremental-resolve`, data),
 };
 
+// FR-R07/FR-R08 (Could Have, MVP 3 Sprint 10): รายงานวิเคราะห์การแลกเวร/การลาหยุด
+export interface ShiftSwapHistoryReport {
+  month: number;
+  year: number;
+  total: number;
+  byStatus: Record<string, number>;
+  byWard: Array<{ wardName: string; count: number }>;
+  byUser: Array<{ userId: string; fullName: string; count: number }>;
+  items: ShiftSwapRequestRecord[];
+}
+
+export interface LeaveAnalysisReport {
+  year: number;
+  total: number;
+  byType: Record<string, number>;
+  byStatus: Record<string, number>;
+  approvalRatePercent: number | null;
+  byWard: Array<{ wardName: string; count: number }>;
+  byMonth: number[];
+  items: LeaveRequestRecord[];
+}
+
+export const reportsApi = {
+  shiftSwapHistory: (month: number, year: number) =>
+    get<ShiftSwapHistoryReport>(`/reports/shift-swaps?month=${month}&year=${year}`),
+  leaveAnalysis: (year: number) => get<LeaveAnalysisReport>(`/reports/leave-analysis?year=${year}`),
+};
+
 /** FR-AI01 (MVP 2 Sprint 5): Auto-suggest ตารางเวรด้วย AI — รันแบบ Asynchronous Job Queue */
 export const aiJobsApi = {
   enqueueScheduleSuggest: (data: { wardId: string; month: number; year: number }) =>
@@ -476,6 +504,30 @@ export interface CalendarEntry {
   endTime: string;
   crossesMidnight: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// MVP 3 Sprint 11: Notification Center (FR-U08) — Notification ถูกสร้างตั้งแต่ Sprint 9
+// แต่ไม่มีช่องทางอ่านเลย จนกว่าจะมี endpoint ชุดนี้
+// ---------------------------------------------------------------------------
+
+export interface NotificationRecord {
+  id: string;
+  channel: 'IN_APP' | 'EMAIL' | 'SMS' | 'WEB_PUSH';
+  category: string;
+  title: string;
+  body: string;
+  isRead: boolean;
+  relatedEntityType?: string | null;
+  relatedEntityId?: string | null;
+  createdAt: string;
+}
+
+export const notificationsApi = {
+  list: (unreadOnly = false) => get<NotificationRecord[]>(`/notifications${unreadOnly ? '?unreadOnly=true' : ''}`),
+  unreadCount: () => get<number>('/notifications/unread-count'),
+  markRead: (id: string) => patch<NotificationRecord>(`/notifications/${id}/read`),
+  markAllRead: () => patch<{ updated: number }>('/notifications/read-all'),
+};
 
 // ---------------------------------------------------------------------------
 // MVP 3 Sprint 9: Leave Request (FR-U04/FR-A13/BP-03) + Shift Swap (FR-U03/FR-A12/BP-02)

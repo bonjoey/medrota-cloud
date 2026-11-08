@@ -32,3 +32,26 @@ export class ReportsController {
     res.send(buffer);
   }
 }
+
+/** FR-R07/FR-R08 (Could Have, MVP 3 Sprint 10): รายงานวิเคราะห์ — คนละ Controller เพราะ
+ * ไม่ได้ผูกกับ Schedule ใบใดใบหนึ่ง (เป็นรายงานสรุปข้ามเดือน/ปี) */
+@Controller('reports')
+export class ReportsAnalyticsController {
+  constructor(private readonly reportsService: ReportsService) {}
+
+  @Roles(Role.SUPER_ADMIN, Role.WARD_ADMIN, Role.HEAD_NURSE)
+  @Get('shift-swaps')
+  shiftSwapHistory(
+    @Query('month') month: string,
+    @Query('year') year: string,
+    @CurrentUser() actor: CurrentUserPayload,
+  ) {
+    return this.reportsService.shiftSwapHistory(actor, { month: Number(month), year: Number(year) });
+  }
+
+  @Roles(Role.SUPER_ADMIN, Role.WARD_ADMIN, Role.HEAD_NURSE)
+  @Get('leave-analysis')
+  leaveAnalysis(@Query('year') year: string, @CurrentUser() actor: CurrentUserPayload) {
+    return this.reportsService.leaveAnalysis(actor, { year: Number(year) });
+  }
+}
